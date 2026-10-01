@@ -12,6 +12,19 @@ let targetAngle = -0.18, angle = -0.18, tilt = 0, targetTilt = 0;
 let zoom = 1, targetZoom = 1, dragging = false, lastX = 0, lastY = 0;
 let paused = reducedMotion.matches, scrollTurn = 0, lastTime = 0;
 let inView = true, artworkPixels = null, artworkTexture = null;
+let scrollProgress = 0, scrollTarget = 0, baseRugX = 0;
+const story = document.querySelector('#rug-story');
+const scrollPhase = document.querySelector('#scroll-phase');
+const scrollTrack = document.querySelector('.scroll-track span');
+const tactileTag = document.querySelector('.tactile-tag');
+const stageWord = document.querySelector('.stage-word');
+function updateScrollTarget() {
+  if (!story || reducedMotion.matches) { scrollTarget = 0; return; }
+  const rect = story.getBoundingClientRect();
+  const pin = story.querySelector('.rug-pin');
+  const distance = Math.max(1, story.offsetHeight - pin.offsetHeight);
+  if (!paused) scrollTarget = THREE.MathUtils.clamp(-rect.top / distance, 0, 1);
+}
 const artworkCrop = { x: 0.10, y: 0.235, width: 0.79, height: 0.57 };
 function artworkColor(x, z, target) {
   if (!artworkPixels) return false;
@@ -192,8 +205,10 @@ function resize() {
   camera.bottom = -span / 2;
   camera.zoom = zoom;
   camera.updateProjectionMatrix();
-  rug.position.x = mobile.matches ? 0 : Math.min(1.12, span * aspect * 0.115);
+  baseRugX = mobile.matches ? 0 : Math.min(1.12, span * aspect * 0.115);
+  rug.position.x = baseRugX * (1 - scrollProgress);
   shadow.position.x = rug.position.x;
+  updateScrollTarget();
 }
 function animate(time) {
   frame = requestAnimationFrame(animate);
@@ -205,10 +220,25 @@ function animate(time) {
   angle += (targetAngle - angle) * smoothing;
   tilt += (targetTilt - tilt) * smoothing;
   zoom += (targetZoom - zoom) * smoothing;
-  rug.rotation.y = angle + scrollTurn;
-  rug.rotation.x = tilt;
+  scrollProgress += (scrollTarget - scrollProgress) * smoothing;
+  if (reducedMotion.matches) scrollProgress = 0;
+  const p = scrollProgress;
+  const lift = Math.sin(p * Math.PI) * 0.68;
+  rug.rotation.y = angle + p * Math.PI * 2;
+  rug.rotation.x = tilt + Math.sin(p * Math.PI) * 0.52;
+  rug.rotation.z = Math.sin(p * Math.PI * 2) * 0.11;
+  rug.position.y = lift;
+  rug.position.x = baseRugX * (1 - p);
+  shadow.position.x = rug.position.x;
+  shadow.scale.setScalar(1 + lift * 0.22);
+  shadow.material.opacity = 1 - lift * 0.55;
   state.rotation = rug.rotation.y;
-  camera.zoom = zoom;
+  camera.zoom = zoom * (1 + p * p * 0.8);
+  state.scrollScene = { progress: p, lift, tilt: rug.rotation.x, zoom: camera.zoom, rotation: rug.rotation.y };
+  if (scrollTrack) scrollTrack.style.transform = `scaleX(${p})`;
+  if (tactileTag) tactileTag.style.opacity = String(Math.max(0, 1 - p * 1.8));
+  if (stageWord) stageWord.style.opacity = String(Math.max(0, 1 - p * 1.5));
+  if (scrollPhase) scrollPhase.textContent = p < 0.30 ? '01 / OBLIKA' : p < 0.72 ? '02 / ROB IN DEBELINA' : '03 / VLAKNA';
   camera.updateProjectionMatrix();
   try { renderer.render(scene, camera); } catch (error) { fail(error); }
 }
@@ -295,13 +325,13 @@ function init() {
     if (event.key === 'Home') reset();
   });
   document.querySelectorAll('[data-design]').forEach(button => button.addEventListener('click', () => selectDesign(button.dataset.design)));
-  document.querySelector('#motion-toggle')?.addEventListener('click', () => { paused = !paused; syncMotion(); });
+  document.querySelector('#motion-toggle')?.addEventListener('click', () => { paused = !paused; if (paused) { scrollTarget = scrollProgress; targetAngle = angle; } syncMotion(); updateScrollTarget(); });
   document.querySelector('#zoom-in')?.addEventListener('click', () => { targetZoom = Math.min(1.4, targetZoom + 0.12); });
   document.querySelector('#zoom-out')?.addEventListener('click', () => { targetZoom = Math.max(0.7, targetZoom - 0.12); });
   document.querySelector('#reset-view')?.addEventListener('click', reset);
-  reducedMotion.addEventListener('change', () => { paused = reducedMotion.matches; scrollTurn = 0; syncMotion(); });
+  reducedMotion.addEventListener('change', () => { paused = reducedMotion.matches; scrollTurn = 0; scrollProgress = scrollTarget = 0; syncMotion(); updateScrollTarget(); });
   mobile.addEventListener('change', () => { buildRug(state.design); resize(); });
-  window.addEventListener('scroll', () => { if (!reducedMotion.matches && !paused) scrollTurn = Math.min(window.scrollY / 6000, 0.22); }, { passive: true });
+  window.addEventListener('scroll', updateScrollTarget, { passive: true });
   new ResizeObserver(resize).observe(stage);
   new IntersectionObserver(entries => { inView = entries[0].isIntersecting; }, { rootMargin: '80px' }).observe(stage);
   window.addEventListener('resize', resize, { passive: true });
