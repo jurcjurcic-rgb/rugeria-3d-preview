@@ -164,7 +164,8 @@ function syncMotion() {
   const button = document.querySelector('#motion-toggle');
   if (button) {
     button.setAttribute('aria-pressed', String(paused));
-    button.setAttribute('aria-label', paused ? 'Resume rug rotation' : 'Pause rug rotation');
+    button.setAttribute('aria-label', paused ? 'Nadaljuj vrtenje preproge' : 'Ustavi vrtenje preproge');
+    button.textContent = paused ? '▷' : 'Ⅱ';
     button.dataset.paused = String(paused);
     button.classList.toggle('is-paused', paused);
   }
