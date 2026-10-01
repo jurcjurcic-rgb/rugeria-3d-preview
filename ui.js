@@ -1,0 +1,9 @@
+'use strict';
+const dialog=document.getElementById('brief-dialog');let lastTrigger;
+for(const button of document.querySelectorAll('[data-open-brief]'))button.addEventListener('click',()=>{lastTrigger=button;dialog.showModal();});
+document.querySelector('.close-dialog').addEventListener('click',()=>dialog.close());
+dialog.addEventListener('click',event=>{const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();});
+dialog.addEventListener('close',()=>lastTrigger?.focus());
+document.getElementById('copy-brief').addEventListener('click',async()=>{const idea=document.getElementById('idea');const status=document.getElementById('copy-status');if(!idea.value.trim()){status.textContent='Najprej napiši svojo idejo.';idea.focus();return;}const text='Živjo, Rugeria! Zanima me preproga po naročilu. Moja ideja: '+idea.value.trim()+'\nSe lahko dogovorimo o izvedljivosti, ceni in roku?';try{await navigator.clipboard.writeText(text);status.textContent='Kopirano. Zdaj odpri Instagram in prilepi sporočilo v DM.';}catch{idea.value=text;idea.focus();idea.select();status.textContent='Označi in kopiraj besedilo, nato ga prilepi v Instagram DM.';}});
+const names={bloom:'Eye bloom',wave:'Blue wave',acid:'Acid check'};
+for(const button of document.querySelectorAll('[data-design]'))button.addEventListener('click',()=>{document.getElementById('design-name').textContent=names[button.dataset.design];document.getElementById('model-note').textContent=button.dataset.design==='bloom'?'3D interpretacija · ni natančen model izdelka.':'Oblikovna študija · ni izdelek iz Rugeriine ponudbe.';for(const b of document.querySelectorAll('[data-design]')){const active=b===button;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}});
