@@ -1,4 +1,7 @@
 import * as THREE from './vendor/three.module.js';
+import { createYarnGeometry, animateYarnMaterial } from './yarn.js';
+import { applyScrollPose } from './scene-path.js';
+import { createUnderlay } from './backing.js';
 
 // Interactive artist-inspired material study, not a scan or a product photograph.
 const canvas = document.querySelector('#rug-canvas');
@@ -7,12 +10,14 @@ const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const mobile = window.matchMedia('(max-width: 760px)');
 const state = { ready: false, design: 'bloom', rotation: 0, renderer: null, selectDesign, reset };
 window.rugeriaScene = state;
-let renderer, scene, camera, rug, pile, backing, shadow, frame;
+let renderer, scene, camera, rug, pile, backing, underlay, shadow, frame;
+const yarnUniforms = { uAssembly: {value: 0}, uGrowth: {value: 0.45}, uCarve: {value: 0} };
 let targetAngle = -0.18, angle = -0.18, tilt = 0, targetTilt = 0;
 let zoom = 1, targetZoom = 1, dragging = false, lastX = 0, lastY = 0;
 let paused = reducedMotion.matches, scrollTurn = 0, lastTime = 0;
 let inView = true, artworkPixels = null, artworkTexture = null;
 let scrollProgress = 0, scrollTarget = 0, baseRugX = 0;
+let lastDraw = {p:-1,angle:0,tilt:0,zoom:0};
 const story = document.querySelector('#rug-story');
 const scrollPhase = document.querySelector('#scroll-phase');
 const scrollTrack = document.querySelector('.scroll-track span');
@@ -103,6 +108,7 @@ function buildRug(design) {
   const random = randomGenerator(27941);
   if (pile) { rug.remove(pile); pile.geometry.dispose(); pile.material.dispose(); }
   if (backing) { rug.remove(backing); backing.geometry.dispose(); backing.material.dispose(); }
+  if (underlay) { rug.remove(underlay); underlay.geometry.dispose(); underlay.material.map?.dispose(); underlay.material.dispose(); }
   const [sx, sz] = stretch(design);
   const shape = new THREE.Shape();
   for (let i = 0; i <= 256; i++) {
@@ -126,11 +132,18 @@ function buildRug(design) {
   backing.castShadow = true;
   backing.receiveShadow = true;
   rug.add(backing);
+  underlay = createUnderlay(shape);
+  rug.add(underlay);
 
-  const count = mobile.matches ? 10000 : 22000;
-  const strand = new THREE.CylinderGeometry(0.009, 0.016, 1, 5, 1);
-  strand.translate(0, 0.5, 0);
-  pile = new THREE.InstancedMesh(strand, new THREE.MeshStandardMaterial({ roughness: 0.98, metalness: 0, color: '#ffffff' }), count);
+  const count = mobile.matches ? 8000 : 18000;
+  const strand = createYarnGeometry(mobile.matches);
+  const material = new THREE.MeshPhysicalMaterial({ roughness: 0.92, metalness: 0, color: '#ffffff', sheen: 0.55, sheenRoughness: 0.9, sheenColor: '#ede1d9' });
+  animateYarnMaterial(material, yarnUniforms);
+  pile = new THREE.InstancedMesh(strand, material, count);
+  pile.frustumCulled = false;
+  const scatters = new Float32Array(count * 3);
+  const delays = new Float32Array(count);
+  const edges = new Float32Array(count);
   const dummy = new THREE.Object3D(), tint = new THREE.Color();
   let index = 0;
   while (index < count) {
@@ -139,24 +152,34 @@ function buildRug(design) {
     const r = Math.hypot(x, z), theta = Math.atan2(z, x);
     if (r > boundary(theta, design) - 0.015) continue;
     const region = colorAt(x, z, design);
-    const height = (0.068 + random() * 0.085) * (design === 'bloom' && region === 2 ? 1.12 : 1);
-    dummy.position.set(x * sx, 0.115, z * sz);
+    const height = (0.044 + random() * 0.040) * (design === 'bloom' && region === 2 ? 1.12 : 1);
+    dummy.position.set(x * sx, 0.139, z * sz);
     dummy.rotation.set((random() - 0.5) * 0.48 + 0.12, random() * Math.PI, (random() - 0.5) * 0.48);
     dummy.scale.set(0.72 + random() * 0.65, height, 0.72 + random() * 0.65);
     dummy.updateMatrix();
     pile.setMatrixAt(index, dummy.matrix);
+    scatters[index*3] = (random()-0.5)*10;
+    scatters[index*3+1] = 0.5 + random()*5;
+    scatters[index*3+2] = (random()-0.5)*9;
+    delays[index] = Math.min(0.54, r/2 * 0.38 + random()*0.13);
+    edges[index] = [colorAt(x+0.04,z,design),colorAt(x-0.04,z,design),colorAt(x,z+0.04,design),colorAt(x,z-0.04,design)].some(c=>c!==region) ? 1 : 0;
     if (design !== 'bloom' || !artworkColor(x, z, tint)) tint.copy(colors[design][region]);
-    tint.multiplyScalar(0.79 + random() * 0.34);
+    tint.multiplyScalar(0.92 + random() * 0.14);
     pile.setColorAt(index, tint);
     index++;
   }
+  strand.setAttribute('aScatter', new THREE.InstancedBufferAttribute(scatters, 3));
+  strand.setAttribute('aDelay', new THREE.InstancedBufferAttribute(delays, 1));
+  strand.setAttribute('aCarve', new THREE.InstancedBufferAttribute(edges, 1));
   pile.instanceMatrix.needsUpdate = true;
   pile.instanceColor.needsUpdate = true;
   pile.castShadow = false; // 22,000 real strands; the solid backing casts the contact silhouette.
   pile.receiveShadow = true;
   pile.computeBoundingSphere();
   rug.add(pile);
-  state.fiberCount = count;
+  state.fiberCount = count * (mobile.matches ? 3 : 4);
+  state.tuftCount = count;
+  state.needsRender = true;
 }
 
 function selectDesign(design) {
@@ -198,16 +221,11 @@ function resize() {
   renderer.setSize(width, height, false);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile.matches ? 1.5 : 2));
   const aspect = width / height;
-  const span = mobile.matches ? Math.max(5.15, 4.9 / aspect) : Math.max(5.3, 6.8 / aspect);
-  camera.left = -span * aspect / 2;
-  camera.right = span * aspect / 2;
-  camera.top = span / 2;
-  camera.bottom = -span / 2;
+  camera.aspect = aspect;
   camera.zoom = zoom;
   camera.updateProjectionMatrix();
-  baseRugX = mobile.matches ? 0 : Math.min(1.12, span * aspect * 0.115);
-  rug.position.x = baseRugX * (1 - scrollProgress);
-  shadow.position.x = rug.position.x;
+  baseRugX = 0;
+  state.needsRender = true;
   updateScrollTarget();
 }
 function animate(time) {
@@ -215,30 +233,29 @@ function animate(time) {
   if (document.hidden || !inView || !state.ready) { lastTime = time; return; }
   const dt = Math.min((time - (lastTime || time)) / 1000, 0.05);
   lastTime = time;
-  if (!paused && !dragging && !reducedMotion.matches) targetAngle += dt * 0.045;
+  // Scroll, not an idle timer, drives the cinematic sequence.
   const smoothing = reducedMotion.matches ? 1 : 1 - Math.exp(-dt * 9);
   angle += (targetAngle - angle) * smoothing;
   tilt += (targetTilt - tilt) * smoothing;
   zoom += (targetZoom - zoom) * smoothing;
   scrollProgress += (scrollTarget - scrollProgress) * smoothing;
   if (reducedMotion.matches) scrollProgress = 0;
-  const p = scrollProgress;
-  const lift = Math.sin(p * Math.PI) * 0.68;
-  rug.rotation.y = angle + p * Math.PI * 2;
-  rug.rotation.x = tilt + Math.sin(p * Math.PI) * 0.52;
-  rug.rotation.z = Math.sin(p * Math.PI * 2) * 0.11;
-  rug.position.y = lift;
-  rug.position.x = baseRugX * (1 - p);
-  shadow.position.x = rug.position.x;
-  shadow.scale.setScalar(1 + lift * 0.22);
-  shadow.material.opacity = 1 - lift * 0.55;
+  const p = reducedMotion.matches ? 1 : scrollProgress;
+  if (!state.needsRender && Math.abs(p-lastDraw.p)<0.00008 && Math.abs(angle-lastDraw.angle)<0.00008 && Math.abs(tilt-lastDraw.tilt)<0.00008 && Math.abs(zoom-lastDraw.zoom)<0.00008) return;
+  lastDraw = {p,angle,tilt,zoom};
+  state.needsRender = false;
+  const pose = applyScrollPose(p, camera, rug, mobile.matches, angle, tilt, zoom);
+  yarnUniforms.uAssembly.value = reducedMotion.matches ? 1 : THREE.MathUtils.smoothstep(p, 0, 0.24);
+  yarnUniforms.uGrowth.value = 0.38 + 0.62 * THREE.MathUtils.smoothstep(p, 0.13, 0.38);
+  yarnUniforms.uCarve.value = THREE.MathUtils.smoothstep(p, 0.42, 0.56);
+  backing.visible = p > 0.16;
+  underlay.visible = p > 0.18;
+  shadow.position.x = 0;
+  shadow.scale.setScalar(1 + pose.lift * 0.14);
+  shadow.material.opacity = THREE.MathUtils.smoothstep(p, 0.14, 0.25) * Math.max(0, 1-pose.lift*0.38);
   state.rotation = rug.rotation.y;
-  camera.zoom = zoom * (1 + p * p * 0.8);
-  state.scrollScene = { progress: p, lift, tilt: rug.rotation.x, zoom: camera.zoom, rotation: rug.rotation.y };
-  if (scrollTrack) scrollTrack.style.transform = `scaleX(${p})`;
-  if (tactileTag) tactileTag.style.opacity = String(Math.max(0, 1 - p * 1.8));
-  if (stageWord) stageWord.style.opacity = String(Math.max(0, 1 - p * 1.5));
-  if (scrollPhase) scrollPhase.textContent = p < 0.30 ? '01 / OBLIKA' : p < 0.72 ? '02 / ROB IN DEBELINA' : '03 / VLAKNA';
+  state.scrollScene = {progress: scrollProgress, ...pose, zoom: camera.zoom, assembly: yarnUniforms.uAssembly.value, growth: yarnUniforms.uGrowth.value, carve: yarnUniforms.uCarve.value};
+  if (scrollTrack) scrollTrack.style.transform = `scaleX(${scrollProgress})`;
   camera.updateProjectionMatrix();
   try { renderer.render(scene, camera); } catch (error) { fail(error); }
 }
@@ -254,11 +271,11 @@ function init() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   scene = new THREE.Scene();
-  camera = new THREE.OrthographicCamera(-4, 4, 3, -3, 0.1, 50);
+  camera = new THREE.PerspectiveCamera(38, stage.clientWidth / stage.clientHeight, 0.04, 90);
   camera.position.set(0, 7.8, 5.2);
   camera.lookAt(0, 0, 0);
-  scene.add(new THREE.HemisphereLight(0xfff5eb, 0xbba3ac, 2.2));
-  const key = new THREE.DirectionalLight(0xffeddb, 3.3);
+  scene.add(new THREE.HemisphereLight(0xfff5eb, 0xbba3ac, 1.6));
+  const key = new THREE.DirectionalLight(0xffeddb, 2.3);
   key.position.set(-3, 7, 4);
   key.castShadow = true;
   const shadowResolution = mobile.matches ? 1024 : 2048;
